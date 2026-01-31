@@ -134,6 +134,19 @@ CLAUDE_EXPORT_DIR := claude-export
 
 .PHONY: claude-export
 claude-export: docs-singlepage claude-combine ## Build documentation for Claude upload
+	@echo "Copying singlepage HTML to export directory..."
+	@mkdir -p $(CLAUDE_EXPORT_DIR)
+	@if [ -f $(DOCS_OUTPUT)/Index.html ]; then \
+		cp $(DOCS_OUTPUT)/Index.html $(CLAUDE_EXPORT_DIR)/typo3-coreapi-singlepage.html; \
+		echo "Copied Index.html to $(CLAUDE_EXPORT_DIR)/typo3-coreapi-singlepage.html"; \
+	elif [ -f $(DOCS_OUTPUT)/singlepage.html ]; then \
+		cp $(DOCS_OUTPUT)/singlepage.html $(CLAUDE_EXPORT_DIR)/typo3-coreapi-singlepage.html; \
+		echo "Copied singlepage.html to $(CLAUDE_EXPORT_DIR)/typo3-coreapi-singlepage.html"; \
+	else \
+		echo "Warning: No singlepage HTML found in $(DOCS_OUTPUT)"; \
+	fi
+	@echo "Claude export complete. Files in $(CLAUDE_EXPORT_DIR)/"
+	@ls -lh $(CLAUDE_EXPORT_DIR)/
 
 .PHONY: docs-singlepage
 docs-singlepage: ## Build singlepage HTML documentation
