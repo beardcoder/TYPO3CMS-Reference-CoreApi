@@ -49,12 +49,12 @@ jobs:
             ghcr.io/typo3-documentation/render-guides:latest \
             --config=Documentation \
             --output-format=singlepage \
-            --no-progress 2>&1 | tee ./render.log
+            --no-progress 2>&1 | tee ${GITHUB_WORKSPACE}/render.log
           
           # Check if Docker command succeeded
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "Render failed with exit code ${PIPESTATUS[0]}"
-            cat ./render.log
+            cat ${GITHUB_WORKSPACE}/render.log
             exit 1
           fi
           
