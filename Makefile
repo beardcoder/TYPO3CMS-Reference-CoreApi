@@ -128,9 +128,29 @@ fix-cgl: check-dependencies ## Fix TYPO3 Coding Guidelines violations
 	Build/Scripts/runTests.sh -s cgl
 
 # ------------------------------------------------------------------------------
+# Claude Export
+# ------------------------------------------------------------------------------
+CLAUDE_EXPORT_DIR := claude-export
+
+.PHONY: claude-export
+claude-export: docs-singlepage claude-combine ## Build documentation for Claude upload
+
+.PHONY: docs-singlepage
+docs-singlepage: ## Build singlepage HTML documentation
+	mkdir -p $(DOCS_OUTPUT)
+	docker run --user $(DOCKER_USER) --rm --pull always -v "$(shell pwd)":/project -t $(DOCKER_IMAGE) --config=$(DOCS_DIR) --output-format=singlepage
+
+.PHONY: claude-combine
+claude-combine: ## Combine all RST files into single document
+	@mkdir -p $(CLAUDE_EXPORT_DIR)
+	@python3 Build/Scripts/combine_docs_for_claude.py
+	@echo "Export created in $(CLAUDE_EXPORT_DIR)/"
+	@ls -lh $(CLAUDE_EXPORT_DIR)/
+
+# ------------------------------------------------------------------------------
 # Cleanup
 # ------------------------------------------------------------------------------
 .PHONY: clean
 clean: ## Remove generated documentation
-	rm -rf $(DOCS_OUTPUT)
-	@echo "Cleaned $(DOCS_OUTPUT)"
+	rm -rf $(DOCS_OUTPUT) $(CLAUDE_EXPORT_DIR)
+	@echo "Cleaned $(DOCS_OUTPUT) and $(CLAUDE_EXPORT_DIR)"

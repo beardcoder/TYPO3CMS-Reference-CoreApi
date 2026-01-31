@@ -19,6 +19,7 @@ config/
 .webprj
 /_make
 /Documentation-GENERATED-temp/
+/claude-export/
 ehthumbs.db
 auth.json
 composer.lock

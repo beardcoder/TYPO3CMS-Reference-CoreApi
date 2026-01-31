@@ -1,0 +1,377 @@
+name: Build Documentation for Claude
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      include_pdf:
+        description: 'Generate PDF (slower)'
+        type: boolean
+        default: true
+
+jobs:
+  build-exports:
+    name: Build Documentation Exports
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install conversion tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc wkhtmltopdf
+
+      - name: Create output directory
+        run: mkdir -p claude-export
+
+      # =========================================================================
+      # Strategy 1: Singlepage HTML via render-guides
+      # =========================================================================
+      - name: Build Singlepage HTML
+        run: |
+          mkdir -p Documentation-GENERATED-temp
+          docker run --rm --pull always \
+            -v $(pwd):/project \
+            ghcr.io/typo3-documentation/render-guides:latest \
+            --config=Documentation \
+            --output-format=singlepage \
+            --no-progress || echo "Singlepage build completed with warnings"
+
+      - name: Copy Singlepage HTML to export
+        run: |
+          if [ -f Documentation-GENERATED-temp/singlepage.html ]; then
+            cp Documentation-GENERATED-temp/singlepage.html claude-export/typo3-coreapi-singlepage.html
+          elif [ -f Documentation-GENERATED-temp/Index.html ]; then
+            cp Documentation-GENERATED-temp/Index.html claude-export/typo3-coreapi-singlepage.html
+          fi
+
+      # =========================================================================
+      # Strategy 2: Combined Markdown from all RST files
+      # =========================================================================
+      - name: Create combined Markdown document
+        run: |
+          cat << 'SCRIPT' > combine_docs.py
+          #!/usr/bin/env python3
+          """
+          Combines all RST documentation files into a single Markdown document.
+          Optimized for uploading to Claude as a knowledge document.
+          """
+          import os
+          import re
+          from pathlib import Path
+
+          def get_title_from_rst(content):
+              """Extract title from RST file (underlined with = or -)."""
+              lines = content.split('\n')
+              for i, line in enumerate(lines):
+                  if i > 0 and lines[i-1].strip():
+                      if re.match(r'^[=]+$', line.strip()) or re.match(r'^[-]+$', line.strip()):
+                          return lines[i-1].strip()
+              return None
+
+          def rst_to_simple_markdown(content, filename):
+              """Convert RST to simplified Markdown for Claude."""
+              # Remove RST-specific directives but keep content
+              lines = content.split('\n')
+              output_lines = []
+              in_code_block = False
+              code_block_lang = ''
+              skip_until_dedent = False
+              base_indent = 0
+
+              for line in lines:
+                  # Handle code blocks
+                  if re.match(r'\s*\.\. code-block::\s*(\w+)?', line):
+                      match = re.match(r'\s*\.\. code-block::\s*(\w+)?', line)
+                      code_block_lang = match.group(1) or ''
+                      in_code_block = True
+                      output_lines.append(f'```{code_block_lang}')
+                      continue
+
+                  if re.match(r'\s*\.\. literalinclude::', line):
+                      output_lines.append('```')
+                      output_lines.append(f'[Code from: {line.split("::")[-1].strip()}]')
+                      output_lines.append('```')
+                      continue
+
+                  # Skip directive options (lines starting with :)
+                  if re.match(r'\s+:\w+:', line) and not in_code_block:
+                      continue
+
+                  # Handle directive blocks we want to skip
+                  if re.match(r'\s*\.\. (toctree|index|include|image|figure|only|ifconfig)::', line):
+                      skip_until_dedent = True
+                      base_indent = len(line) - len(line.lstrip())
+                      continue
+
+                  if skip_until_dedent:
+                      current_indent = len(line) - len(line.lstrip()) if line.strip() else base_indent + 1
+                      if line.strip() and current_indent <= base_indent:
+                          skip_until_dedent = False
+                      else:
+                          continue
+
+                  # Handle notes, warnings, etc. - convert to blockquotes
+                  if re.match(r'\s*\.\. (note|warning|important|tip|seealso|attention|caution|danger|error|hint)::', line):
+                      directive_type = re.match(r'\s*\.\. (\w+)::', line).group(1).upper()
+                      output_lines.append(f'\n> **{directive_type}:**')
+                      continue
+
+                  # Convert RST headers to Markdown
+                  if re.match(r'^[=]+$', line.strip()) and output_lines:
+                      if output_lines[-1].strip():
+                          output_lines[-1] = f'# {output_lines[-1].strip()}'
+                      continue
+                  if re.match(r'^[-]+$', line.strip()) and output_lines:
+                      if output_lines[-1].strip():
+                          output_lines[-1] = f'## {output_lines[-1].strip()}'
+                      continue
+                  if re.match(r'^[~]+$', line.strip()) and output_lines:
+                      if output_lines[-1].strip():
+                          output_lines[-1] = f'### {output_lines[-1].strip()}'
+                      continue
+                  if re.match(r'^[\^]+$', line.strip()) and output_lines:
+                      if output_lines[-1].strip():
+                          output_lines[-1] = f'#### {output_lines[-1].strip()}'
+                      continue
+
+                  # Handle inline code and references
+                  line = re.sub(r':ref:`([^`]+)`', r'[\1]', line)
+                  line = re.sub(r':php:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':typoscript:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':yaml:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':sql:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':file:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':command:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':guilabel:`([^`]+)`', r'**\1**', line)
+                  line = re.sub(r':kbd:`([^`]+)`', r'`\1`', line)
+                  line = re.sub(r':abbr:`([^`]+)`', r'\1', line)
+                  line = re.sub(r'``([^`]+)``', r'`\1`', line)
+
+                  # End code block on dedent
+                  if in_code_block and line.strip() and not line.startswith('   ') and not line.startswith('\t'):
+                      output_lines.append('```')
+                      in_code_block = False
+
+                  output_lines.append(line)
+
+              if in_code_block:
+                  output_lines.append('```')
+
+              return '\n'.join(output_lines)
+
+          def process_documentation():
+              """Process all documentation files."""
+              docs_path = Path('Documentation')
+              output = []
+
+              # Add header
+              output.append('# TYPO3 Core API Reference')
+              output.append('')
+              output.append('This document is a comprehensive reference for TYPO3 CMS Core API.')
+              output.append('Generated from the official TYPO3 documentation.')
+              output.append('')
+              output.append('---')
+              output.append('')
+
+              # Define the order of main sections
+              section_order = [
+                  'Introduction',
+                  'ApiOverview',
+                  'ExtensionArchitecture',
+                  'Configuration',
+                  'CodingGuidelines',
+                  'PhpArchitecture',
+                  'Security',
+                  'Testing',
+                  'Administration',
+              ]
+
+              # Process sections in order
+              for section in section_order:
+                  section_path = docs_path / section
+                  if section_path.exists():
+                      output.append(f'\n\n# {section.replace("Api", "API ")}\n')
+                      output.append('=' * 80)
+                      output.append('')
+
+                      # Find all RST files in this section
+                      rst_files = sorted(section_path.rglob('*.rst'))
+                      for rst_file in rst_files:
+                          if rst_file.name.startswith('_'):
+                              continue
+                          try:
+                              content = rst_file.read_text(encoding='utf-8')
+                              relative_path = rst_file.relative_to(docs_path)
+                              output.append(f'\n\n## File: {relative_path}\n')
+                              output.append('-' * 60)
+                              output.append('')
+                              output.append(rst_to_simple_markdown(content, rst_file.name))
+                          except Exception as e:
+                              print(f'Error processing {rst_file}: {e}')
+
+              # Write output
+              combined = '\n'.join(output)
+
+              # Write Markdown version
+              with open('claude-export/typo3-coreapi-complete.md', 'w', encoding='utf-8') as f:
+                  f.write(combined)
+
+              # Write plain text version (for maximum compatibility)
+              with open('claude-export/typo3-coreapi-complete.txt', 'w', encoding='utf-8') as f:
+                  f.write(combined)
+
+              print(f'Created combined documentation: {len(combined)} characters')
+              print(f'Processed {len(list(docs_path.rglob("*.rst")))} RST files')
+
+          if __name__ == '__main__':
+              process_documentation()
+          SCRIPT
+
+          python3 combine_docs.py
+
+      # =========================================================================
+      # Strategy 3: PDF Generation from Singlepage HTML
+      # =========================================================================
+      - name: Generate PDF from Singlepage HTML
+        if: ${{ github.event.inputs.include_pdf != 'false' }}
+        run: |
+          if [ -f claude-export/typo3-coreapi-singlepage.html ]; then
+            # Try wkhtmltopdf first
+            wkhtmltopdf \
+              --enable-local-file-access \
+              --page-size A4 \
+              --margin-top 20mm \
+              --margin-bottom 20mm \
+              --margin-left 15mm \
+              --margin-right 15mm \
+              --encoding UTF-8 \
+              --title "TYPO3 Core API Reference" \
+              claude-export/typo3-coreapi-singlepage.html \
+              claude-export/typo3-coreapi-from-html.pdf || echo "PDF from HTML failed"
+          fi
+
+          # Also create PDF from Markdown
+          if [ -f claude-export/typo3-coreapi-complete.md ]; then
+            pandoc \
+              claude-export/typo3-coreapi-complete.md \
+              -o claude-export/typo3-coreapi-from-markdown.pdf \
+              --pdf-engine=wkhtmltopdf \
+              --metadata title="TYPO3 Core API Reference" \
+              -V geometry:margin=1in \
+              -V fontsize=10pt \
+              || echo "PDF from Markdown failed"
+          fi
+
+      # =========================================================================
+      # Strategy 4: Optimized single-file for Claude (chunked if needed)
+      # =========================================================================
+      - name: Create Claude-optimized exports
+        run: |
+          cat << 'SCRIPT' > optimize_for_claude.py
+          #!/usr/bin/env python3
+          """
+          Creates optimized exports for Claude with size limits and structure.
+          Claude can handle files up to ~200k tokens, roughly 800KB of text.
+          """
+          import os
+          from pathlib import Path
+
+          def split_if_needed(filepath, max_size_kb=700):
+              """Split file if it exceeds max size."""
+              if not os.path.exists(filepath):
+                  return
+
+              size_kb = os.path.getsize(filepath) / 1024
+              print(f'{filepath}: {size_kb:.0f} KB')
+
+              if size_kb > max_size_kb:
+                  content = Path(filepath).read_text(encoding='utf-8')
+                  lines = content.split('\n')
+
+                  # Split into parts
+                  part_size = len(lines) // ((size_kb // max_size_kb) + 1)
+                  parts = []
+                  current_part = []
+
+                  for line in lines:
+                      current_part.append(line)
+                      # Split at section boundaries when possible
+                      if len(current_part) >= part_size and line.startswith('# '):
+                          parts.append('\n'.join(current_part))
+                          current_part = []
+
+                  if current_part:
+                      parts.append('\n'.join(current_part))
+
+                  # Write parts
+                  base = filepath.rsplit('.', 1)[0]
+                  ext = filepath.rsplit('.', 1)[1]
+                  for i, part in enumerate(parts, 1):
+                      part_path = f'{base}-part{i}.{ext}'
+                      Path(part_path).write_text(part, encoding='utf-8')
+                      print(f'  Created {part_path}: {len(part)/1024:.0f} KB')
+
+          # Check and split files if needed
+          split_if_needed('claude-export/typo3-coreapi-complete.md')
+          split_if_needed('claude-export/typo3-coreapi-complete.txt')
+          SCRIPT
+
+          python3 optimize_for_claude.py
+
+      - name: List export contents
+        run: |
+          echo "=== Claude Export Contents ==="
+          ls -lah claude-export/
+          echo ""
+          echo "=== File sizes ==="
+          du -sh claude-export/*
+          echo ""
+          echo "=== Total size ==="
+          du -sh claude-export/
+
+      # =========================================================================
+      # Upload Artifacts
+      # =========================================================================
+      - name: Upload Markdown export
+        uses: actions/upload-artifact@v4
+        with:
+          name: typo3-docs-markdown
+          path: |
+            claude-export/*.md
+            claude-export/*.txt
+          retention-days: 30
+
+      - name: Upload HTML export
+        uses: actions/upload-artifact@v4
+        with:
+          name: typo3-docs-html
+          path: claude-export/*.html
+          retention-days: 30
+
+      - name: Upload PDF export
+        uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.include_pdf != 'false' }}
+        with:
+          name: typo3-docs-pdf
+          path: claude-export/*.pdf
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload complete export bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: typo3-docs-claude-complete
+          path: claude-export/
+          retention-days: 30
