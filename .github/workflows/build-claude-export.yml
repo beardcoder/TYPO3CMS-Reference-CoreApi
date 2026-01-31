@@ -40,19 +40,24 @@ jobs:
       # Build Singlepage HTML and Combined Markdown using Make targets
       # =========================================================================
       - name: Build Singlepage HTML
+        shell: bash
         run: |
-          mkdir -p Documentation-GENERATED-temp
           set -o pipefail
+          mkdir -p Documentation-GENERATED-temp
           docker run --rm --pull always \
             -v $(pwd):/project \
             ghcr.io/typo3-documentation/render-guides:latest \
             --config=Documentation \
             --output-format=singlepage \
-            --no-progress 2>&1 | tee /tmp/render.log || {
-              echo "Render failed with exit code $?"
-              cat /tmp/render.log
-              exit 1
-            }
+            --no-progress 2>&1 | tee ./render.log
+          
+          # Check if Docker command succeeded
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "Render failed with exit code ${PIPESTATUS[0]}"
+            cat ./render.log
+            exit 1
+          fi
+          
           # Verify output was created
           if [ ! -f Documentation-GENERATED-temp/Index.html ] && [ ! -f Documentation-GENERATED-temp/singlepage.html ]; then
             echo "Error: No singlepage HTML output found"
